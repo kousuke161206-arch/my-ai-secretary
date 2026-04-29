@@ -5,13 +5,18 @@ import pandas as pd
 import google.generativeai as genai
 from datetime import datetime
 
+# --- 設定の読み込み ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Geminiの初期化を慎重に行う
+# AIモデルをあらかじめ空で定義（エラー防止）
+model = None
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+    except Exception as e:
+        print(f"Gemini初期化エラー: {e}")
 
 WATCH_LIST = [
     "^GSPC", "^N225", "AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", 
@@ -41,30 +46,37 @@ def get_analyst_info(stock_obj):
     except: return "取得不可"
 
 def analyze_news_with_ai(ticker, news_list):
-    if not GEMINI_API_KEY: return "APIキー未設定"
+    # modelが正しく作られていない場合は解析しない
+    if model is None: return "AI解析不可 (APIキー設定を確認してください)"
     if not news_list: return "関連ニュースなし"
     
     try:
-        # タイトルがない場合も考慮して安全に取得
         headlines = []
         for n in news_list[:3]:
-            title = n.get('title') or n.get('summary') or "タイトルなし"
-            headlines.append(title)
+            # タイトルか概要を安全に取得
+            t = n.get('title') or n.get('summary') or "ニュース項目あり"
+            headlines.append(t)
         
-        prompt = f"銘柄 {ticker} の最新ニュースです:\n" + "\n".join(headlines) + "\n\n1行で要約し、投資判断（買い・売り・中立）を理由と共に日本語で答えて。AIとしての意見でOKです。"
-        
+        prompt = f"銘柄 {ticker} の最新ニュース:\n" + "\n".join(headlines) + "\n\n1行で要約し、投資判断を理由と共に日本語で回答して。"
         response = model.generate_content(prompt)
-        # AIが回答を拒否（安全フィルターなど）した場合の処理
-        if not response.parts:
-            return "AIが回答を控えました（安全フィルター等）。"
         return response.text.strip()
     except Exception as e:
-        return f"AI解析エラー: {str(e)}"
+        return f"解析エラー: {str(e)}"
+
+def send_discord(message):
+    """Discordへの送信を安全に行う"""
+    if not WEBHOOK_URL:
+        print("WEBHOOK_URLが設定されていません。")
+        return
+    try:
+        requests.post(WEBHOOK_URL, json={"content": message})
+    except Exception as e:
+        print(f"Discord送信エラー: {e}")
 
 def main():
     now_str = datetime.now().strftime('%Y/%m/%d %H:%M')
     alert_list = []
-    print(f"--- 25銘柄パトロール開始 ({now_str}) ---")
+    print(f"--- パトロール開始 ({now_str}) ---")
     
     for ticker in WATCH_LIST:
         try:
@@ -72,28 +84,22 @@ def main():
             df = stock.history(period="1mo")
             if len(df) < 2: continue
             
-            current_row = df.iloc[-1]
-            prev_row = df.iloc[-2]
-            current_price = current_row['Close']
-            prev_close = prev_row['Close']
-            
-            # データ変動チェック
-            if current_price == prev_close and len(df) >= 3:
-                current_row = df.iloc[-2]
-                prev_row = df.iloc[-3]
-                current_price = current_row['Close']
-                prev_close = prev_row['Close']
+            # 最新の有効なデータを特定
+            curr = df.iloc[-1]
+            prev = df.iloc[-2]
+            if curr['Close'] == prev['Close'] and len(df) >= 3:
+                curr, prev = df.iloc[-2], df.iloc[-3]
 
-            change_pct = ((current_price - prev_close) / prev_close) * 100
+            change_pct = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
             rsi = calculate_rsi(df).iloc[-1]
             
             print(f"[ ] {ticker:8}: 前日比 {change_pct:+.2f}%, RSI: {rsi:.1f}")
             
-            # 判定（-3%以下 または RSI 35以下 または日本株の急落）
+            # 条件判定
             if change_pct <= -3.0 or rsi <= 35:
+                # 異常あり：詳細情報を集める（失敗しても他を止めない）
                 eval_info = get_analyst_info(stock)
                 
-                # ニュース取得を確実にする
                 news_data = []
                 try: news_data = stock.news
                 except: pass
@@ -105,19 +111,20 @@ def main():
                 
                 alert_list.append(
                     f"⚠️ **{name}** ({ticker})\n"
-                    f"💰 価格: {current_price:.2f}{unit} ({change_pct:+.2f}%)\n"
+                    f"💰 価格: {curr['Close']:.2f}{unit} ({change_pct:+.2f}%)\n"
                     f"📊 RSI: {rsi:.1f}\n"
                     f"👨‍筋評価: {eval_info}\n"
                     f"🤖 **AI解析:** {ai_news}\n"
                 )
         except Exception as e:
-            print(f"[!] {ticker:8}: 実行エラー ({e})")
+            print(f"[!] {ticker}: 処理スキップ ({e})")
 
+    # メッセージの送信
     if alert_list:
         header = f"🚀 **【AI精鋭レポート】勝機検知 ({now_str})**\n━━━━━━━━━━━━━━\n"
-        requests.post(WEBHOOK_URL, json={"content": header + "\n".join(alert_list)})
+        send_discord(header + "\n".join(alert_list))
     else:
-        requests.post(WEBHOOK_URL, json={"content": f"✅ {now_str}：パトロール完了。異常なし。"})
+        send_discord(f"✅ {now_str}：パトロール完了。異常なし。")
 
 if __name__ == "__main__":
     main()
