@@ -2,9 +2,9 @@ name: AI Stock Check
 
 on:
   schedule:
-    # 毎日、日本時間の午前9時と午後9時に実行する設定（UTC表記）
-    - cron: '0 0,12 * * *'
-  workflow_dispatch: # ボタンひとつで今すぐ動かす機能も追加します
+    # 30分おきに実行する設定（*/30 は「30分ごと」という意味です）
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # 手動実行ボタンも残しておきます
 
 jobs:
   build:
@@ -23,6 +23,5 @@ jobs:
 
       - name: プログラムを実行
         env:
-          # GitHubの舞台設定（Secrets）で保存したURLを読み込みます
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python sbi_ai_bot.py
