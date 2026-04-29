@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4 # v3からv4へ更新（警告対策）
+        uses: actions/checkout@v4 # 最新版
 
       - name: Set up Python
-        uses: actions/setup-python@v5 # v4からv5へ更新（警告対策）
+        uses: actions/setup-python@v5 # 最新版
         with:
           python-version: '3.10'
 
@@ -22,6 +22,7 @@ jobs:
 
       - name: Run script
         env:
+          # ここはGitHubのSettingsで登録した名前と一致させてください
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python sbi_ai_bot.py
