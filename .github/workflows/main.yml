@@ -18,7 +18,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        # 最新の google-genai ライブラリに変更します
+        # 2026年最新の安定版ライブラリをインストールします
         run: pip install yfinance requests google-genai pandas
 
       - name: Run script
