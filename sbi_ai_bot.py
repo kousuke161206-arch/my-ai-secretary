@@ -2,20 +2,18 @@ import yfinance as yf
 import requests
 import os
 import pandas as pd
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google import genai # 最新のSDK
 from datetime import datetime
 
 # --- 設定 ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# AIの初期化（安全フィルターをオフに設定）
-model = None
+# 2026年最新規格のAIクライアント初期化
+client = None
 if GEMINI_API_KEY:
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        client = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
         print(f"AI初期化失敗: {e}")
 
@@ -47,27 +45,21 @@ def get_analyst_info(stock_obj):
     except: return "取得不可"
 
 def analyze_news_with_ai(ticker, news_list):
-    if model is None: return "AI初期化エラー（Keyを確認してください）"
+    if client is None: return "AIクライアント未設定"
     if not news_list: return "ニュースなし"
     
     try:
         headlines = [n.get('title', 'No Title') for n in news_list[:3]]
         prompt = f"銘柄 {ticker} の最新ニュース:\n" + "\n".join(headlines) + "\n\n1行で要約し、投資判断を理由と共に日本語で回答して。"
         
-        # 安全フィルターを完全にオフにして、暴落ニュースでも判定させる
-        response = model.generate_content(
-            prompt,
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            }
+        # 2026年最新の生成コマンドとモデル名(gemini-2.0-flash)を使用
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt
         )
         return response.text.strip()
     except Exception as e:
-        # 何が原因でエラーになったか、Discordに具体的に出すようにします
-        return f"解析エラー({type(e).__name__})"
+        return f"解析エラー({str(e)})"
 
 def main():
     now_str = datetime.now().strftime('%Y/%m/%d %H:%M')
@@ -79,7 +71,6 @@ def main():
             df = stock.history(period="1mo")
             if len(df) < 2: continue
             
-            # 最新の有効なデータを特定
             c_row, p_row = df.iloc[-1], df.iloc[-2]
             if c_row['Close'] == p_row['Close'] and len(df) >= 3:
                 c_row, p_row = df.iloc[-2], df.iloc[-3]
@@ -87,10 +78,8 @@ def main():
             change_pct = ((c_row['Close'] - p_row['Close']) / p_row['Close']) * 100
             rsi = calculate_rsi(df).iloc[-1]
             
-            print(f"[ ] {ticker:8}: 前日比 {change_pct:+.2f}%, RSI: {rsi:.1f}")
-            
+            # 判定条件
             if change_pct <= -3.0 or rsi <= 35:
-                # 異常あり：詳細情報を収集
                 eval_info = get_analyst_info(stock)
                 ai_news = analyze_news_with_ai(ticker, stock.news)
                 
