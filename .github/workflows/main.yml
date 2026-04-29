@@ -15,11 +15,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          # バージョンを 3.10 に上げて警告を消します
-          python-version: '3.10'
+          python-version: '3.10' # 警告を消すためにバージョンを上げます
 
       - name: Install dependencies
-        # 最新のライブラリを指定
         run: pip install yfinance requests google-generativeai pandas
 
       - name: Run script
