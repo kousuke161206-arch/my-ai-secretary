@@ -8,6 +8,7 @@ from datetime import datetime
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# Geminiの初期化を慎重に行う
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
@@ -40,20 +41,30 @@ def get_analyst_info(stock_obj):
     except: return "取得不可"
 
 def analyze_news_with_ai(ticker, news_list):
-    if not GEMINI_API_KEY or not news_list: return "ニュースなし"
+    if not GEMINI_API_KEY: return "APIキー未設定"
+    if not news_list: return "関連ニュースなし"
+    
     try:
-        # ★修正ポイント：'title'が存在しないニュースを安全に無視する書き方に変更
-        headlines = "\n".join([n.get('title', 'No Title') for n in news_list[:3]])
-        prompt = f"銘柄 {ticker} の最新ニュース:\n{headlines}\n\n1行で要約し、投資判断を理由と共に日本語で回答して。"
+        # タイトルがない場合も考慮して安全に取得
+        headlines = []
+        for n in news_list[:3]:
+            title = n.get('title') or n.get('summary') or "タイトルなし"
+            headlines.append(title)
+        
+        prompt = f"銘柄 {ticker} の最新ニュースです:\n" + "\n".join(headlines) + "\n\n1行で要約し、投資判断（買い・売り・中立）を理由と共に日本語で答えて。AIとしての意見でOKです。"
+        
         response = model.generate_content(prompt)
-        return response.text
-    except: return "AI解析スキップ（エラー発生）"
+        # AIが回答を拒否（安全フィルターなど）した場合の処理
+        if not response.parts:
+            return "AIが回答を控えました（安全フィルター等）。"
+        return response.text.strip()
+    except Exception as e:
+        return f"AI解析エラー: {str(e)}"
 
 def main():
     now_str = datetime.now().strftime('%Y/%m/%d %H:%M')
     alert_list = []
-    
-    print(f"--- 25銘柄パトロールログ ({now_str}) ---")
+    print(f"--- 25銘柄パトロール開始 ({now_str}) ---")
     
     for ticker in WATCH_LIST:
         try:
@@ -61,13 +72,12 @@ def main():
             df = stock.history(period="1mo")
             if len(df) < 2: continue
             
-            # 最新2日分のデータを特定
             current_row = df.iloc[-1]
             prev_row = df.iloc[-2]
             current_price = current_row['Close']
             prev_close = prev_row['Close']
             
-            # データが動いていない場合のバックアップ
+            # データ変動チェック
             if current_price == prev_close and len(df) >= 3:
                 current_row = df.iloc[-2]
                 prev_row = df.iloc[-3]
@@ -77,21 +87,18 @@ def main():
             change_pct = ((current_price - prev_close) / prev_close) * 100
             rsi = calculate_rsi(df).iloc[-1]
             
-            date_label = current_row.name.strftime('%m/%d')
-            print(f"[ ] {ticker:8}: {date_label} 前日比 {change_pct:+.2f}%, RSI: {rsi:.1f}")
+            print(f"[ ] {ticker:8}: 前日比 {change_pct:+.2f}%, RSI: {rsi:.1f}")
             
-            # 判定条件
+            # 判定（-3%以下 または RSI 35以下 または日本株の急落）
             if change_pct <= -3.0 or rsi <= 35:
-                print(f"  => 🚩 チャンス検知！詳細情報の収集を開始します。")
+                eval_info = get_analyst_info(stock)
                 
-                # 詳細情報の取得でエラーが起きても、メインの報告を止めないように個別に囲む
-                eval_info = "データ取得中..."
-                ai_news = "解析中..."
-                try: eval_info = get_analyst_info(stock)
-                except: eval_info = "評価データ取得失敗"
+                # ニュース取得を確実にする
+                news_data = []
+                try: news_data = stock.news
+                except: pass
                 
-                try: ai_news = analyze_news_with_ai(ticker, stock.news)
-                except: ai_news = "ニュース解析失敗"
+                ai_news = analyze_news_with_ai(ticker, news_data)
                 
                 unit = "円" if ".T" in ticker or ticker == "^N225" else "ドル"
                 name = "S&P500" if ticker == "^GSPC" else "日経平均" if ticker == "^N225" else ticker
@@ -104,7 +111,7 @@ def main():
                     f"🤖 **AI解析:** {ai_news}\n"
                 )
         except Exception as e:
-            print(f"[!] {ticker:8}: エラー発生 ({e})。報告をスキップします。")
+            print(f"[!] {ticker:8}: 実行エラー ({e})")
 
     if alert_list:
         header = f"🚀 **【AI精鋭レポート】勝機検知 ({now_str})**\n━━━━━━━━━━━━━━\n"
