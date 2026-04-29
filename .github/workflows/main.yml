@@ -1,0 +1,28 @@
+name: AI Stock Check
+
+on:
+  schedule:
+    # 毎日、日本時間の午前9時と午後9時に実行する設定（UTC表記）
+    - cron: '0 0,12 * * *'
+  workflow_dispatch: # ボタンひとつで今すぐ動かす機能も追加します
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Pythonをセットアップ
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 必要なライブラリをインストール
+        run: pip install yfinance requests
+
+      - name: プログラムを実行
+        env:
+          # GitHubの舞台設定（Secrets）で保存したURLを読み込みます
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python sbi_ai_bot.py
