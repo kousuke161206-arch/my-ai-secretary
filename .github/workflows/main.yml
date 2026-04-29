@@ -10,12 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # v3からv4へ更新（警告対策）
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # v4からv5へ更新（警告対策）
         with:
-          python-version: '3.10' # 警告を消すためにバージョンを上げます
+          python-version: '3.10'
 
       - name: Install dependencies
         run: pip install yfinance requests google-generativeai pandas
