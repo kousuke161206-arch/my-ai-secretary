@@ -41,12 +41,13 @@ def get_analyst_info(stock_obj):
 
 def analyze_news_with_ai(ticker, news_list):
     if not GEMINI_API_KEY or not news_list: return "ニュースなし"
-    headlines = "\n".join([n['title'] for n in news_list[:3]])
-    prompt = f"銘柄 {ticker} の最新ニュース:\n{headlines}\n\n1行で要約し、投資判断（ポジティブ/ネガティブ/中立）を理由と共に日本語で回答して。"
     try:
+        # ★修正ポイント：'title'が存在しないニュースを安全に無視する書き方に変更
+        headlines = "\n".join([n.get('title', 'No Title') for n in news_list[:3]])
+        prompt = f"銘柄 {ticker} の最新ニュース:\n{headlines}\n\n1行で要約し、投資判断を理由と共に日本語で回答して。"
         response = model.generate_content(prompt)
         return response.text
-    except: return "AI解析失敗"
+    except: return "AI解析スキップ（エラー発生）"
 
 def main():
     now_str = datetime.now().strftime('%Y/%m/%d %H:%M')
@@ -60,15 +61,13 @@ def main():
             df = stock.history(period="1mo")
             if len(df) < 2: continue
             
-            # 【重要】最新の2日分を確実に特定する（休場の空データを無視）
-            # 最新の終値と、その1つ前の終値
+            # 最新2日分のデータを特定
             current_row = df.iloc[-1]
             prev_row = df.iloc[-2]
-            
             current_price = current_row['Close']
             prev_close = prev_row['Close']
             
-            # もし「今日」のデータがまだ動いていない（前日と全く同じ）なら、もう1つ前を見る
+            # データが動いていない場合のバックアップ
             if current_price == prev_close and len(df) >= 3:
                 current_row = df.iloc[-2]
                 prev_row = df.iloc[-3]
@@ -78,13 +77,21 @@ def main():
             change_pct = ((current_price - prev_close) / prev_close) * 100
             rsi = calculate_rsi(df).iloc[-1]
             
-            # 日付もログに出して「いつのデータか」を明確にする
             date_label = current_row.name.strftime('%m/%d')
             print(f"[ ] {ticker:8}: {date_label} 前日比 {change_pct:+.2f}%, RSI: {rsi:.1f}")
             
+            # 判定条件
             if change_pct <= -3.0 or rsi <= 35:
-                eval_info = get_analyst_info(stock)
-                ai_news = analyze_news_with_ai(ticker, stock.news)
+                print(f"  => 🚩 チャンス検知！詳細情報の収集を開始します。")
+                
+                # 詳細情報の取得でエラーが起きても、メインの報告を止めないように個別に囲む
+                eval_info = "データ取得中..."
+                ai_news = "解析中..."
+                try: eval_info = get_analyst_info(stock)
+                except: eval_info = "評価データ取得失敗"
+                
+                try: ai_news = analyze_news_with_ai(ticker, stock.news)
+                except: ai_news = "ニュース解析失敗"
                 
                 unit = "円" if ".T" in ticker or ticker == "^N225" else "ドル"
                 name = "S&P500" if ticker == "^GSPC" else "日経平均" if ticker == "^N225" else ticker
@@ -97,15 +104,13 @@ def main():
                     f"🤖 **AI解析:** {ai_news}\n"
                 )
         except Exception as e:
-            print(f"[!] {ticker:8}: エラー ({e})")
+            print(f"[!] {ticker:8}: エラー発生 ({e})。報告をスキップします。")
 
     if alert_list:
         header = f"🚀 **【AI精鋭レポート】勝機検知 ({now_str})**\n━━━━━━━━━━━━━━\n"
         requests.post(WEBHOOK_URL, json={"content": header + "\n".join(alert_list)})
     else:
-        # なぜ「異常なし」になったかのヒントを添える
-        send_msg = f"✅ {now_str}：パトロール完了。現在、-3%を超える下落銘柄は見当たりません。"
-        requests.post(WEBHOOK_URL, json={"content": send_msg})
+        requests.post(WEBHOOK_URL, json={"content": f"✅ {now_str}：パトロール完了。異常なし。"})
 
 if __name__ == "__main__":
     main()
