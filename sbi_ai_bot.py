@@ -4,19 +4,18 @@ import os
 import pandas as pd
 from google import genai
 from datetime import datetime
-import sys
+import time
 
-# --- 設定の読み込み ---
+# --- 設定 ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# AIクライアントの初期化（失敗してもプログラムを止めない）
 client = None
 if GEMINI_API_KEY:
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
-        print(f"AI初期化エラー: {e}")
+        print(f"AI初期化失敗: {e}")
 
 WATCH_LIST = [
     "^GSPC", "^N225", "AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", 
@@ -32,36 +31,30 @@ def calculate_rsi(df, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def analyze_news_with_ai(ticker, news_list):
-    if client is None: return "AI未設定（Keyを確認してください）"
-    if not news_list: return "関連ニュースなし"
+def batch_analyze_with_ai(request_data):
+    """【新機能】複数銘柄を1回のAIリクエストでまとめて解析する"""
+    if client is None or not request_data:
+        return {}
     
-    try:
-        headlines = [n.get('title', 'No Title') for n in news_list[:3]]
-        prompt = f"銘柄 {ticker} の最新ニュース:\n" + "\n".join(headlines) + "\n\n1行で要約し、投資判断（買い・売り・中立）を理由と共に日本語で答えて。"
-        
-        # モデル名は2026年現在の最新版を使用
-        response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
-        return response.text.strip()
-    except Exception as e:
-        print(f"AI解析中にエラー: {e}")
-        return "AI解析一時不可（価格のみ確認してください）"
+    # AIへの巨大な質問状（プロンプト）を作成
+    prompt = "以下の各銘柄の最新ニュースを個別に分析し、それぞれ1行で『判断(買い/売り/中立)と理由』を日本語で答えてください。\n\n"
+    for ticker, news in request_data:
+        headlines = "\n".join([n.get('title', 'No Title') for n in news[:2]])
+        prompt += f"■{ticker}のニュース:\n{headlines}\n\n"
 
-def send_discord(message):
-    """何があってもDiscord送信を試みる関数"""
-    if not WEBHOOK_URL:
-        print("エラー: WEBHOOK_URLが設定されていません。")
-        return
     try:
-        response = requests.post(WEBHOOK_URL, json={"content": message})
-        print(f"Discord送信結果: {response.status_code}")
+        response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+        # AIの回答を銘柄ごとに辞書形式で管理する（簡易的な抽出）
+        return response.text
     except Exception as e:
-        print(f"Discord送信中にクラッシュ: {e}")
+        print(f"AIバッチ解析エラー: {e}")
+        return f"AI解析エラー: {e}"
 
 def main():
     now_str = datetime.now().strftime('%Y/%m/%d %H:%M')
-    alert_list = []
-    print(f"--- 25銘柄パトロール開始 ({now_str}) ---", flush=True)
+    matched_stocks = [] # チャンス銘柄の情報を溜めるリスト
+    
+    print(f"--- 25銘柄パトロール開始 ({now_str}) ---")
     
     for ticker in WATCH_LIST:
         try:
@@ -69,43 +62,44 @@ def main():
             df = stock.history(period="1mo")
             if len(df) < 2: continue
             
-            c_row, p_row = df.iloc[-1], df.iloc[-2]
-            # 最新データが止まっている場合の調整
-            if c_row['Close'] == p_row['Close'] and len(df) >= 3:
-                c_row, p_row = df.iloc[-2], df.iloc[-3]
+            curr, prev = df.iloc[-1], df.iloc[-2]
+            if curr['Close'] == prev['Close'] and len(df) >= 3:
+                curr, prev = df.iloc[-2], df.iloc[-3]
 
-            change_pct = ((c_row['Close'] - p_row['Close']) / p_row['Close']) * 100
+            change_pct = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
             rsi = calculate_rsi(df).iloc[-1]
             
-            print(f"[ ] {ticker:8}: 前日比 {change_pct:+.2f}%, RSI: {rsi:.1f}", flush=True)
-            
-            # 判定条件
             if change_pct <= -3.0 or rsi <= 35:
-                # ニュース取得
+                # ニュースを即解析せず、まずはデータを溜める
                 news_data = []
                 try: news_data = stock.news
                 except: pass
-                
-                ai_news = analyze_news_with_ai(ticker, news_data)
-                
-                unit = "円" if ".T" in ticker or ticker == "^N225" else "ドル"
-                name = "S&P500" if ticker == "^GSPC" else "日経平均" if ticker == "^N225" else ticker
-                
-                alert_list.append(
-                    f"⚠️ **{name}** ({ticker})\n"
-                    f"💰 価格: {c_row['Close']:.2f}{unit} ({change_pct:+.2f}%)\n"
-                    f"📊 RSI: {rsi:.1f}\n"
-                    f"🤖 **AI解析:** {ai_news}\n"
-                )
-        except Exception as e:
-            print(f"[!] {ticker}: エラー回避 ({e})", flush=True)
+                matched_stocks.append({
+                    "ticker": ticker,
+                    "price": f"{curr['Close']:.2f}",
+                    "change": f"{change_pct:+.2f}%",
+                    "rsi": f"{rsi:.1f}",
+                    "news": news_data,
+                    "unit": "円" if ".T" in ticker or ticker == "^N225" else "ドル",
+                    "name": "S&P500" if ticker == "^GSPC" else "日経平均" if ticker == "^N225" else ticker
+                })
+        except: continue
 
-    # 送信処理（ここでWEBHOOK_URLがNoneでもクラッシュしないように関数化済み）
-    if alert_list:
-        msg = f"🚀 **【AI精鋭レポート】勝機検知 ({now_str})**\n━━━━━━━━━━━━━━\n" + "\n".join(alert_list)
-        send_discord(msg)
+    # まとめてAIに投げる
+    if matched_stocks:
+        request_items = [(s["ticker"], s["news"]) for s in matched_stocks]
+        ai_summary = batch_analyze_with_ai(request_items)
+        
+        # Discord用のメッセージ作成
+        report = f"🚀 **【AI精鋭レポート】勝機検知 ({now_str})**\n"
+        report += "🤖 **AI総合解析結果:**\n" + ai_summary + "\n\n━━━━━━━━━━━━━━\n"
+        
+        for s in matched_stocks:
+            report += f"⚠️ **{s['name']}** ({s['ticker']}): {s['price']}{s['unit']} ({s['change']}) / RSI: {s['rsi']}\n"
+        
+        requests.post(WEBHOOK_URL, json={"content": report})
     else:
-        send_discord(f"✅ {now_str}：パトロール完了。現在、条件に合う銘柄はありません。")
+        requests.post(WEBHOOK_URL, json={"content": f"✅ {now_str}：パトロール完了。異常なし。"})
 
 if __name__ == "__main__":
     main()
